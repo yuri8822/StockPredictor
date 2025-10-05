@@ -234,6 +234,21 @@ class LSTMModel(nn.Module):
         output = self.fc(lstm_out[:, -1, :])
         return output
 
+class GRUModel(nn.Module):
+    def __init__(self, input_size=1, hidden_size=64, num_layers=2, dropout=0.2):
+        super(GRUModel, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        
+        self.gru = nn.GRU(input_size, hidden_size, num_layers, 
+                         batch_first=True, dropout=dropout)
+        self.fc = nn.Linear(hidden_size, 1)
+    
+    def forward(self, x):
+        gru_out, _ = self.gru(x)
+        output = self.fc(gru_out[:, -1, :])
+        return output
+
 class LSTMForecaster:
     def __init__(self, lookback=10, hidden_size=64, num_layers=2):
         self.lookback = lookback
@@ -288,6 +303,60 @@ class LSTMForecaster:
         predictions_rescaled = self.scaler.inverse_transform(predictions_array).flatten()
         return predictions_rescaled
 
+class GRUForecaster:
+    def __init__(self, lookback=10, hidden_size=64, num_layers=2):
+        self.lookback = lookback
+        self.model = GRUModel(input_size=1, hidden_size=hidden_size, num_layers=num_layers)
+        self.scaler = MinMaxScaler()
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model.to(self.device)
+    
+    def fit(self, train_data: np.ndarray, epochs=50, lr=0.001):
+        scaled_data = self.scaler.fit_transform(train_data.reshape(-1, 1)).flatten()
+        dataset = StockDataset(scaled_data, self.lookback)
+        
+        if len(dataset) == 0:
+            raise ValueError("Insufficient data for GRU training")
+        
+        dataloader = DataLoader(dataset, batch_size=min(32, len(dataset)), shuffle=True)
+        
+        criterion = nn.MSELoss()
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        
+        self.model.train()
+        for epoch in range(epochs):
+            total_loss = 0
+            for batch_x, batch_y in dataloader:
+                batch_x = batch_x.unsqueeze(-1).to(self.device)
+                batch_y = batch_y.to(self.device)
+                
+                optimizer.zero_grad()
+                outputs = self.model(batch_x)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            
+            if (epoch + 1) % 10 == 0:
+                print(f"  GRU Epoch [{epoch+1}/{epochs}], Loss: {total_loss/len(dataloader):.6f}")
+    
+    def predict(self, steps: int, seed_data: np.ndarray) -> np.ndarray:
+        self.model.eval()
+        scaled_seed = self.scaler.transform(seed_data.reshape(-1, 1)).flatten()
+        current_sequence = list(scaled_seed[-self.lookback:])
+        predictions = []
+        
+        with torch.no_grad():
+            for _ in range(steps):
+                x = torch.FloatTensor(current_sequence[-self.lookback:]).unsqueeze(0).unsqueeze(-1).to(self.device)
+                pred = self.model(x).item()
+                predictions.append(pred)
+                current_sequence.append(pred)
+        
+        predictions_array = np.array(predictions).reshape(-1, 1)
+        predictions_rescaled = self.scaler.inverse_transform(predictions_array).flatten()
+        return predictions_rescaled
+
 # ===========================
 # Ensemble Model
 # ===========================
@@ -295,7 +364,8 @@ class EnsembleForecaster:
     def __init__(self):
         self.arima_forecaster = ARIMAForecaster()
         self.lstm_forecaster = LSTMForecaster(lookback=10)
-        self.weights = {'arima': 0.4, 'lstm': 0.6}
+        self.gru_forecaster = GRUForecaster(lookback=10)
+        self.weights = {'arima': 0.3, 'lstm': 0.35, 'gru': 0.35}
     
     def fit(self, train_data: np.ndarray):
         print("[INFO] Training ARIMA model...")
@@ -303,17 +373,23 @@ class EnsembleForecaster:
         
         print("[INFO] Training LSTM model...")
         self.lstm_forecaster.fit(train_data, epochs=30)
+        
+        print("[INFO] Training GRU model...")
+        self.gru_forecaster.fit(train_data, epochs=30)
     
     def predict(self, steps: int, seed_data: np.ndarray) -> Dict[str, np.ndarray]:
         arima_pred = self.arima_forecaster.predict(steps)
         lstm_pred = self.lstm_forecaster.predict(steps, seed_data)
+        gru_pred = self.gru_forecaster.predict(steps, seed_data)
         
         ensemble_pred = (self.weights['arima'] * arima_pred + 
-                        self.weights['lstm'] * lstm_pred)
+                        self.weights['lstm'] * lstm_pred +
+                        self.weights['gru'] * gru_pred)
         
         return {
             'arima': arima_pred,
             'lstm': lstm_pred,
+            'gru': gru_pred,
             'ensemble': ensemble_pred
         }
 
@@ -411,7 +487,7 @@ class ChartGenerator:
             })
         
         # Add prediction lines
-        colors = {'arima': 'orange', 'lstm': 'green', 'ensemble': 'red'}
+        colors = {'arima': 'orange', 'lstm': 'green', 'gru': 'blue', 'ensemble': 'red'}
         for model_name, pred_values in predictions.items():
             chart_data['data'].append({
                 'type': 'scatter',

@@ -83,12 +83,12 @@ const StockForecasting = () => {
     }
 
     console.log('Rendering metrics for models:', Object.keys(results.metrics));
-    const models = ['arima', 'lstm', 'ensemble'];
+    const models = ['arima', 'lstm', 'gru', 'ensemble'];
     
     return (
       <Grid container spacing={3} sx={{ mb: 4 }}>
         {models.map(model => (
-          <Grid item xs={12} md={4} key={model}>
+          <Grid item xs={12} md={3} key={model}>
             <Card>
               <CardContent>
                 <Typography variant="h6" gutterBottom sx={{ 

@@ -64,8 +64,9 @@ Test the API endpoints:
 
 ### 🤖 Machine Learning Models
 - **ARIMA**: Traditional time series forecasting
-- **LSTM**: Deep learning neural network
-- **Ensemble**: Weighted combination of both models
+- **LSTM**: Deep learning neural network  
+- **GRU**: Gated Recurrent Unit neural network
+- **Ensemble**: Weighted combination of all models
 
 ### 📊 Forecasting Options
 - **Tickers**: Any valid stock symbol (AAPL, GOOGL, MSFT, etc.)
