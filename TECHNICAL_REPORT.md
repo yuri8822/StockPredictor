@@ -1,7 +1,7 @@
 # Stock Forecasting Application - Technical Report
 
 ## CS4063 Natural Language Processing Assignment 
-**Student:** [Your Name]  
+**Student:** Umar Farooq  
 **Date:** October 5, 2025
 
 ---

@@ -285,6 +285,96 @@ class LSTMForecaster:
             
             if (epoch + 1) % 10 == 0:
                 print(f"  Epoch [{epoch+1}/{epochs}], Loss: {total_loss/len(dataloader):.6f}")
+        
+        # Save the trained model
+        self.save_model()
+    
+    def save_model(self, model_dir="../trained_models"):
+        """Save the trained LSTM model for Hugging Face upload"""
+        import os
+        os.makedirs(model_dir, exist_ok=True)
+        
+        model_path = os.path.join(model_dir, "lstm_stock_forecaster.pth")
+        scaler_path = os.path.join(model_dir, "lstm_scaler.pkl")
+        
+        # Save PyTorch model
+        torch.save({
+            'model_state_dict': self.model.state_dict(),
+            'model_config': {
+                'input_size': 1,
+                'hidden_size': self.model.lstm.hidden_size,
+                'num_layers': self.model.lstm.num_layers,
+                'lookback': self.lookback
+            },
+            'model_type': 'LSTM'
+        }, model_path)
+        
+        # Save scaler
+        import pickle
+        with open(scaler_path, 'wb') as f:
+            pickle.dump(self.scaler, f)
+        
+        print(f"[SAVE] LSTM model saved to {model_path}")
+        print(f"[SAVE] LSTM scaler saved to {scaler_path}")
+        
+        # Create model card
+        self._create_model_card(model_dir, "LSTM")
+    
+    def _create_model_card(self, model_dir, model_type):
+        """Create a README.md file for Hugging Face model card"""
+        model_card = f"""---
+tags:
+- pytorch
+- time-series
+- stock-forecasting
+- {model_type.lower()}
+license: mit
+---
+
+# Stock Price Forecasting {model_type} Model
+
+This is a {model_type} (Long Short-Term Memory) neural network trained for stock price forecasting.
+
+## Model Details
+- **Model Type**: {model_type}
+- **Architecture**: 2-layer {model_type} with 64 hidden units
+- **Input**: Normalized stock price sequences (lookback window: {self.lookback})
+- **Output**: Next stock price prediction
+- **Training**: 30 epochs with Adam optimizer
+- **Loss Function**: Mean Squared Error (MSE)
+
+## Usage
+
+```python
+import torch
+import pickle
+from your_model_file import {model_type}Model
+
+# Load model
+checkpoint = torch.load('{model_type.lower()}_stock_forecaster.pth')
+model = {model_type}Model(**checkpoint['model_config'])
+model.load_state_dict(checkpoint['model_state_dict'])
+
+# Load scaler
+with open('{model_type.lower()}_scaler.pkl', 'rb') as f:
+    scaler = pickle.load(f)
+
+# Make predictions
+model.eval()
+# ... your prediction code here
+```
+
+## Training Data
+- Stock price data from various tickers
+- Technical indicators included
+- Data preprocessed with MinMaxScaler
+
+## Performance
+This model is part of an ensemble forecasting system and shows competitive performance on stock price prediction tasks.
+"""
+        
+        with open(os.path.join(model_dir, f"README_{model_type}.md"), 'w') as f:
+            f.write(model_card)
     
     def predict(self, steps: int, seed_data: np.ndarray) -> np.ndarray:
         self.model.eval()
@@ -339,6 +429,96 @@ class GRUForecaster:
             
             if (epoch + 1) % 10 == 0:
                 print(f"  GRU Epoch [{epoch+1}/{epochs}], Loss: {total_loss/len(dataloader):.6f}")
+        
+        # Save the trained model
+        self.save_model()
+    
+    def save_model(self, model_dir="../trained_models"):
+        """Save the trained GRU model for Hugging Face upload"""
+        import os
+        os.makedirs(model_dir, exist_ok=True)
+        
+        model_path = os.path.join(model_dir, "gru_stock_forecaster.pth")
+        scaler_path = os.path.join(model_dir, "gru_scaler.pkl")
+        
+        # Save PyTorch model
+        torch.save({
+            'model_state_dict': self.model.state_dict(),
+            'model_config': {
+                'input_size': 1,
+                'hidden_size': self.model.gru.hidden_size,
+                'num_layers': self.model.gru.num_layers,
+                'lookback': self.lookback
+            },
+            'model_type': 'GRU'
+        }, model_path)
+        
+        # Save scaler
+        import pickle
+        with open(scaler_path, 'wb') as f:
+            pickle.dump(self.scaler, f)
+        
+        print(f"[SAVE] GRU model saved to {model_path}")
+        print(f"[SAVE] GRU scaler saved to {scaler_path}")
+        
+        # Create model card
+        self._create_model_card(model_dir, "GRU")
+    
+    def _create_model_card(self, model_dir, model_type):
+        """Create a README.md file for Hugging Face model card"""
+        model_card = f"""---
+tags:
+- pytorch
+- time-series
+- stock-forecasting
+- {model_type.lower()}
+license: mit
+---
+
+# Stock Price Forecasting {model_type} Model
+
+This is a {model_type} (Gated Recurrent Unit) neural network trained for stock price forecasting.
+
+## Model Details
+- **Model Type**: {model_type}
+- **Architecture**: 2-layer {model_type} with 64 hidden units
+- **Input**: Normalized stock price sequences (lookback window: {self.lookback})
+- **Output**: Next stock price prediction
+- **Training**: 30 epochs with Adam optimizer
+- **Loss Function**: Mean Squared Error (MSE)
+
+## Usage
+
+```python
+import torch
+import pickle
+from your_model_file import {model_type}Model
+
+# Load model
+checkpoint = torch.load('{model_type.lower()}_stock_forecaster.pth')
+model = {model_type}Model(**checkpoint['model_config'])
+model.load_state_dict(checkpoint['model_state_dict'])
+
+# Load scaler
+with open('{model_type.lower()}_scaler.pkl', 'rb') as f:
+    scaler = pickle.load(f)
+
+# Make predictions
+model.eval()
+# ... your prediction code here
+```
+
+## Training Data
+- Stock price data from various tickers
+- Technical indicators included
+- Data preprocessed with MinMaxScaler
+
+## Performance
+This model is part of an ensemble forecasting system and shows competitive performance on stock price prediction tasks.
+"""
+        
+        with open(os.path.join(model_dir, f"README_{model_type}.md"), 'w') as f:
+            f.write(model_card)
     
     def predict(self, steps: int, seed_data: np.ndarray) -> np.ndarray:
         self.model.eval()
