@@ -268,9 +268,16 @@ This stock forecasting application successfully implements all assignment requir
 The ensemble approach demonstrates improved accuracy over individual models, while the modular architecture ensures maintainability and extensibility. The application provides a solid foundation for financial forecasting applications and showcases best practices in both machine learning and web development.
 
 ### Future Enhancements
-- Additional neural architectures (GRU, Transformers)
-- Real-time data streaming
-- Portfolio-level forecasting
+- Additional neural architectures (Transformers, Attention mechanisms)
+- Real-time data streaming with WebSockets
+- Portfolio-level forecasting and risk analysis
 - Advanced ensemble methods (stacking, boosting)
 - Mobile responsive design
 - User authentication and personalization
+- Model versioning and A/B testing
+
+## References
+
+For complete setup instructions, API documentation, and usage examples, see the main [README.md](README.md) file.
+
+The trained models are available in the `trained_models/` directory and are ready for upload to Hugging Face Hub for academic review.
