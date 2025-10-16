@@ -874,4 +874,10 @@ if __name__ == '__main__':
         print("   Please ensure StockDataCollector.py is in the same directory.")
         print("   The API will not work without it.\n")
     
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # Windows-compatible Flask server configuration
+    try:
+        app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False, threaded=True)
+    except OSError as e:
+        print(f"[WARNING] Socket error occurred: {e}")
+        print("[INFO] Trying alternative server configuration...")
+        app.run(debug=False, host='0.0.0.0', port=5000, threaded=True)
