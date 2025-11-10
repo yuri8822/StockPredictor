@@ -565,7 +565,7 @@ class AdaptiveLearningManager:
 # Example usage functions
 def example_incremental_update():
     """Example of using incremental update"""
-    from trained_models.model_definitions import LSTMModel
+    from model_definitions import LSTMModel
     
     # Initialize
     version_manager = ModelVersion()
