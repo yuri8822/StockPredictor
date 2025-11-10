@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:6.0
+    container_name: stock_forecasting_mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: stock_forecasting
+    networks:
+      - stock_network
+
+  # Backend API (Flask + Python)
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: stock_forecasting_backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./backend:/app
+      - ./trained_models:/app/trained_models
+      - model_versions:/app/model_versions
+      - evaluation_logs:/app/evaluation_logs
+      - portfolio_data:/app/portfolio_data
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - mongodb
+    networks:
+      - stock_network
+    command: python start_server.py
+
+  # Frontend (React + Vite)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: stock_forecasting_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - stock_network
+    environment:
+      - VITE_API_URL=http://localhost:5000
+
+volumes:
+  mongodb_data:
+    driver: local
+  model_versions:
+    driver: local
+  evaluation_logs:
+    driver: local
+  portfolio_data:
+    driver: local
+
+networks:
+  stock_network:
+    driver: bridge

@@ -1,0 +1,46 @@
+# Docker ignore file for backend
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.env
+.venv
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files (keep small test files only)
+*.csv
+*.xlsx
+*.json
+!requirements.txt
+!package.json
+
+# Logs
+*.log
+
+# Model checkpoints (too large for container)
+*.pth
+*.pkl
+!model_definitions.py
+
+# Temporary files
+tmp/
+temp/
+*.tmp

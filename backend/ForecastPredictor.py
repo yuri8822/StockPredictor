@@ -28,6 +28,11 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
+# Import new modules for adaptive learning, continuous evaluation, and portfolio management
+from AdaptiveLearning import ModelVersion, AdaptiveLearningManager
+from ContinuousEvaluation import MetricsLogger, ContinuousEvaluator, PerformanceMonitor
+from PortfolioManager import PortfolioManager, SimpleThresholdStrategy, MomentumStrategy
+
 warnings.filterwarnings('ignore', category=ConvergenceWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
 
@@ -669,18 +674,92 @@ class ChartGenerator:
                 'yaxis': 'y'
             })
         
-        # Add prediction lines
+        # Add prediction lines with error bands
         colors = {'arima': 'orange', 'lstm': 'green', 'gru': 'blue', 'ensemble': 'red'}
+        ensemble_pred = None
+        all_model_preds = []
+        
         for model_name, pred_values in predictions.items():
+            pred_clean = clean_numeric_list(pred_values)
+            if model_name == 'ensemble':
+                ensemble_pred = np.array(pred_clean)
+            all_model_preds.append(np.array(pred_clean))
+            
             chart_data['data'].append({
                 'type': 'scatter',
                 'x': future_dates_str,
-                'y': clean_numeric_list(pred_values),
+                'y': pred_clean,
                 'mode': 'lines+markers',
                 'name': f'{model_name.upper()} Forecast',
-                'line': {'color': colors[model_name], 'width': 2, 'dash': 'dash'},
+                'line': {
+                    'color': colors[model_name], 
+                    'width': 3 if model_name == 'ensemble' else 2, 
+                    'dash': 'dash'
+                },
+                'marker': {'size': 8 if model_name == 'ensemble' else 6},
                 'yaxis': 'y'
             })
+        
+        # Add prediction uncertainty band (standard deviation across models)
+        if len(all_model_preds) > 1 and ensemble_pred is not None:
+            pred_array = np.array(all_model_preds)
+            pred_std = np.std(pred_array, axis=0)
+            
+            upper_bound = ensemble_pred + pred_std
+            lower_bound = ensemble_pred - pred_std
+            
+            # Upper bound
+            chart_data['data'].append({
+                'type': 'scatter',
+                'x': future_dates_str,
+                'y': clean_numeric_list(upper_bound),
+                'mode': 'lines',
+                'name': 'Uncertainty Upper',
+                'line': {'width': 0},
+                'showlegend': False,
+                'yaxis': 'y',
+                'hoverinfo': 'skip'
+            })
+            
+            # Lower bound with fill
+            chart_data['data'].append({
+                'type': 'scatter',
+                'x': future_dates_str,
+                'y': clean_numeric_list(lower_bound),
+                'mode': 'lines',
+                'name': 'Prediction Uncertainty Band',
+                'line': {'width': 0},
+                'fill': 'tonexty',
+                'fillcolor': 'rgba(255, 0, 0, 0.15)',
+                'yaxis': 'y',
+                'showlegend': True
+            })
+            
+            # Add error annotations at key points
+            last_actual = df_clean['Close'].iloc[-1]
+            annotation_points = [0, len(ensemble_pred)//2, len(ensemble_pred)-1] if len(ensemble_pred) > 2 else [0]
+            
+            annotations = []
+            for idx in annotation_points:
+                if idx < len(ensemble_pred):
+                    pred_value = ensemble_pred[idx]
+                    error_pct = ((pred_value - last_actual) / last_actual) * 100
+                    
+                    annotations.append({
+                        'x': future_dates_str[idx],
+                        'y': pred_value,
+                        'text': f'Δ{error_pct:+.1f}%',
+                        'showarrow': True,
+                        'arrowhead': 2,
+                        'arrowsize': 1,
+                        'arrowwidth': 2,
+                        'ax': 0,
+                        'ay': -40 if idx % 2 == 0 else 40,
+                        'bgcolor': 'rgba(255, 255, 0, 0.7)',
+                        'font': {'size': 10, 'color': 'black'}
+                    })
+            
+            chart_data['layout']['annotations'] = annotations
         
         # Add volume bars
         chart_data['data'].append({
@@ -765,6 +844,25 @@ def update_predictions_for_ticker(ticker: str, horizon: str = '24hrs', days: int
         
         # Create chart data
         chart_data = ChartGenerator.create_candlestick_with_forecast(df.tail(100), predictions, horizon, ticker)
+        
+        # ===== AUTOMATIC METRICS LOGGING (Background Updates) =====
+        metrics_logger = MetricsLogger()
+        for model_name, pred_values in predictions.items():
+            # Use test data if available
+            if len(test_data) >= len(pred_values):
+                actual_values = test_data[:len(pred_values)]
+            else:
+                actual_values = train_data[-len(pred_values):]
+            
+            metrics_logger.log_metrics(
+                ticker=ticker,
+                model_type=model_name,
+                horizon=horizon,
+                predictions=pred_values,
+                actuals=actual_values,
+                metadata={'source': 'background_update', 'train_size': len(train_data)}
+            )
+        # ==========================================================
         
         # Store in cache
         with prediction_lock:
@@ -920,6 +1018,34 @@ def forecast():
         # Store predictions
         db_manager.store_prediction(ticker, horizon, predictions['ensemble'].tolist(), metrics)
         
+        # ===== AUTOMATIC METRICS LOGGING FOR CONTINUOUS EVALUATION =====
+        print("\n[INFO] Logging evaluation metrics...")
+        metrics_logger = MetricsLogger()
+        
+        # Log metrics for each model
+        for model_name, pred_values in predictions.items():
+            # Use test data if available, otherwise use last training values
+            if len(test_data) >= len(pred_values):
+                actual_values = test_data[:len(pred_values)]
+            else:
+                actual_values = train_data[-len(pred_values):]
+            
+            metrics_logger.log_metrics(
+                ticker=ticker,
+                model_type=model_name,
+                horizon=horizon,
+                predictions=pred_values,
+                actuals=actual_values,
+                metadata={
+                    'train_size': len(train_data),
+                    'test_size': len(test_data),
+                    'historical_days': days
+                }
+            )
+        
+        print(f"[INFO] ✓ Metrics logged to evaluation_logs/")
+        # ============================================================
+        
         # Generate chart
         print("\n[INFO] Generating visualization...")
         try:
@@ -991,6 +1117,528 @@ def forecast():
         print(f"[ERROR] {str(e)}")
         import traceback
         traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+# ===========================
+# New API Endpoints for Adaptive Learning, Continuous Evaluation, and Portfolio Management
+# ===========================
+
+# Initialize global managers
+model_version_manager = ModelVersion(model_dir='./model_versions')
+adaptive_learning_manager = AdaptiveLearningManager(model_version_manager)
+metrics_logger = MetricsLogger(log_dir='./evaluation_logs')
+continuous_evaluator = ContinuousEvaluator(metrics_logger)
+performance_monitor = PerformanceMonitor(metrics_logger)
+portfolio_manager = PortfolioManager(initial_capital=100000.0, portfolio_dir='./portfolio_data')
+
+@app.route('/api/adaptive/trigger-update', methods=['POST'])
+def trigger_adaptive_update():
+    """
+    Trigger an incremental/adaptive model update for a ticker
+    Request body: {ticker, model_type, days}
+    """
+    try:
+        data = request.json
+        ticker = data.get('ticker', 'AAPL').upper()
+        model_type = data.get('model_type', 'LSTM')
+        days = data.get('days', 30)
+        
+        print(f"[API] Triggering adaptive update for {ticker} {model_type}")
+        
+        # Load recent data
+        df = CuratedDataLoader.load_curated_dataset(ticker, days)
+        df = CuratedDataLoader.prepare_for_forecasting(df)
+        
+        # Get the current model (for simplicity, create a new one)
+        if model_type == 'LSTM':
+            model = LSTMModel(input_size=1, hidden_size=64, num_layers=2)
+            config = {'input_size': 1, 'hidden_size': 64, 'num_layers': 2}
+        elif model_type == 'GRU':
+            model = GRUModel(input_size=1, hidden_size=64, num_layers=2)
+            config = {'input_size': 1, 'hidden_size': 64, 'num_layers': 2}
+        else:
+            return jsonify({'error': f'Unsupported model type: {model_type}'}), 400
+        
+        # Perform incremental update
+        updated_model, metrics = adaptive_learning_manager.incremental_update(
+            model, df, ticker, model_type, config, epochs=10
+        )
+        
+        return jsonify({
+            'status': 'success',
+            'ticker': ticker,
+            'model_type': model_type,
+            'metrics': metrics,
+            'message': 'Model updated successfully'
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Adaptive update failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/adaptive/versions/<ticker>', methods=['GET'])
+def get_model_versions(ticker):
+    """Get version history for a ticker's models"""
+    try:
+        ticker = ticker.upper()
+        model_type = request.args.get('model_type', None)
+        
+        history = model_version_manager.get_version_history(ticker, model_type)
+        
+        return jsonify({
+            'ticker': ticker,
+            'versions': history,
+            'count': len(history)
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/evaluation/dashboard/<ticker>', methods=['GET'])
+def get_evaluation_dashboard(ticker):
+    """Get comprehensive evaluation dashboard for a ticker"""
+    try:
+        ticker = ticker.upper()
+        time_window_days = int(request.args.get('days', 30))
+        
+        dashboard_data = performance_monitor.get_dashboard_data(
+            ticker, 
+            timedelta(days=time_window_days)
+        )
+        
+        return jsonify(dashboard_data)
+        
+    except Exception as e:
+        print(f"[ERROR] Dashboard retrieval failed: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/evaluation/metrics/<ticker>', methods=['GET'])
+def get_metrics_history(ticker):
+    """Get metrics history for a ticker"""
+    try:
+        ticker = ticker.upper()
+        model_type = request.args.get('model_type', None)
+        horizon = request.args.get('horizon', None)
+        limit = int(request.args.get('limit', 50))
+        
+        history = metrics_logger.get_metrics_history(ticker, model_type, horizon, limit)
+        
+        return jsonify({
+            'ticker': ticker,
+            'history': history,
+            'count': len(history)
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/evaluation/register-prediction', methods=['POST'])
+def register_prediction_for_evaluation():
+    """Register a prediction for future evaluation"""
+    try:
+        data = request.json
+        ticker = data['ticker'].upper()
+        model_type = data['model_type']
+        horizon = data['horizon']
+        predictions = data['predictions']
+        prediction_dates = data['prediction_dates']
+        metadata = data.get('metadata', {})
+        
+        prediction_id = continuous_evaluator.register_prediction(
+            ticker, model_type, horizon, predictions, prediction_dates, metadata
+        )
+        
+        return jsonify({
+            'status': 'success',
+            'prediction_id': prediction_id,
+            'message': 'Prediction registered for evaluation'
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/evaluation/evaluate-pending', methods=['POST'])
+def evaluate_pending_predictions():
+    """Evaluate pending predictions against actual data"""
+    try:
+        data = request.json
+        ticker = data['ticker'].upper()
+        
+        # Load latest actual data
+        df = CuratedDataLoader.load_curated_dataset(ticker, days=90)
+        df = CuratedDataLoader.prepare_for_forecasting(df)
+        
+        # Evaluate pending predictions
+        results = continuous_evaluator.evaluate_pending(df)
+        
+        return jsonify({
+            'status': 'success',
+            'ticker': ticker,
+            'evaluations': results,
+            'count': len(results)
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/status', methods=['GET'])
+def get_portfolio_status():
+    """Get current portfolio status"""
+    try:
+        # Get current prices for all positions
+        current_prices = {}
+        for ticker in portfolio_manager.positions.keys():
+            try:
+                df = CuratedDataLoader.load_curated_dataset(ticker, days=5)
+                if not df.empty:
+                    current_prices[ticker] = df['Close'].iloc[-1]
+            except Exception as e:
+                print(f"[WARNING] Could not get price for {ticker}: {e}")
+        
+        # Update positions and get metrics
+        metrics = portfolio_manager.calculate_metrics(current_prices)
+        positions = portfolio_manager.get_positions_summary()
+        
+        return jsonify({
+            'status': 'success',
+            'metrics': metrics,
+            'positions': positions,
+            'initial_capital': portfolio_manager.initial_capital
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/trade', methods=['POST'])
+def execute_portfolio_trade():
+    """Execute a manual trade"""
+    try:
+        data = request.json
+        ticker = data['ticker'].upper()
+        action = data['action']  # 'buy' or 'sell'
+        quantity = float(data['quantity'])
+        price = float(data.get('price', 0))
+        
+        # Get current price if not provided
+        if price == 0:
+            df = CuratedDataLoader.load_curated_dataset(ticker, days=5)
+            price = df['Close'].iloc[-1]
+        
+        # Execute trade
+        success = portfolio_manager.execute_trade(
+            ticker, action, quantity, price, datetime.now()
+        )
+        
+        if success:
+            # Log portfolio state
+            current_prices = {ticker: price}
+            portfolio_manager.log_portfolio_state(current_prices)
+            
+            return jsonify({
+                'status': 'success',
+                'message': f'{action.upper()} order executed',
+                'trade': {
+                    'ticker': ticker,
+                    'action': action,
+                    'quantity': quantity,
+                    'price': price
+                }
+            })
+        else:
+            return jsonify({
+                'status': 'failed',
+                'message': f'Could not execute {action} order'
+            }), 400
+        
+    except Exception as e:
+        print(f"[ERROR] Trade execution failed: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/signal', methods=['POST'])
+def generate_trading_signal():
+    """Generate trading signal based on prediction and strategy"""
+    try:
+        data = request.json
+        ticker = data['ticker'].upper()
+        prediction = float(data['prediction'])
+        strategy_type = data.get('strategy', 'simple')  # 'simple', 'momentum', or 'mean_reversion'
+        
+        # Load historical data
+        df = CuratedDataLoader.load_curated_dataset(ticker, days=90)
+        current_price = df['Close'].iloc[-1]
+        
+        # Set strategy
+        if strategy_type == 'momentum':
+            portfolio_manager.set_strategy(MomentumStrategy())
+        elif strategy_type == 'simple':
+            portfolio_manager.set_strategy(SimpleThresholdStrategy())
+        else:
+            return jsonify({'error': f'Unknown strategy: {strategy_type}'}), 400
+        
+        # Generate and execute signal
+        action_taken = portfolio_manager.generate_and_execute_signal(
+            ticker, prediction, current_price, datetime.now(), df
+        )
+        
+        # Log portfolio state
+        current_prices = {ticker: current_price}
+        portfolio_manager.log_portfolio_state(current_prices)
+        
+        return jsonify({
+            'status': 'success',
+            'ticker': ticker,
+            'action_taken': action_taken,
+            'current_price': current_price,
+            'prediction': prediction,
+            'strategy': strategy_type
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/history', methods=['GET'])
+def get_portfolio_history():
+    """Get portfolio trade history"""
+    try:
+        limit = int(request.args.get('limit', 50))
+        history = portfolio_manager.get_trade_history(limit)
+        
+        return jsonify({
+            'status': 'success',
+            'history': history,
+            'count': len(history)
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/portfolio/performance', methods=['GET'])
+def get_portfolio_performance():
+    """Get detailed portfolio performance over time"""
+    try:
+        return jsonify({
+            'status': 'success',
+            'history': portfolio_manager.portfolio_history,
+            'initial_capital': portfolio_manager.initial_capital
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/candlestick/<ticker>', methods=['GET'])
+def get_candlestick_with_errors(ticker):
+    """Get candlestick chart with prediction errors overlay"""
+    try:
+        ticker = ticker.upper()
+        days = int(request.args.get('days', 90))
+        horizon = request.args.get('horizon', '24hrs')
+        
+        # Load data
+        df = CuratedDataLoader.load_curated_dataset(ticker, days)
+        df = CuratedDataLoader.prepare_for_forecasting(df)
+        
+        if df.empty or len(df) < 30:
+            return jsonify({'error': 'Insufficient data for visualization (need at least 30 days)'}), 400
+        
+        # Check if predictions exist in cache, if not generate them
+        with prediction_lock:
+            if ticker not in prediction_cache:
+                print(f"[INFO] No cached predictions for {ticker}, generating new forecast...")
+                # Release lock before generating predictions (to avoid deadlock)
+                
+        # Generate predictions if not in cache
+        if ticker not in prediction_cache:
+            try:
+                steps = Config.FORECAST_HORIZONS[horizon]
+                
+                # Prepare training data
+                train_size = int(len(df) * 0.8)
+                train_data = df['Close'].values[:train_size]
+                
+                # Train ensemble model
+                print(f"[INFO] Training models for {ticker}...")
+                ensemble = EnsembleForecaster()
+                ensemble.fit(train_data)
+                
+                # Generate predictions
+                predictions_dict = ensemble.predict(steps, train_data)
+                
+                # Store in cache
+                with prediction_lock:
+                    prediction_cache[ticker] = {
+                        'ticker': ticker,
+                        'horizon': horizon,
+                        'predictions': {k: v.tolist() if hasattr(v, 'tolist') else v 
+                                      for k, v in predictions_dict.items()},
+                        'updated_at': datetime.now().isoformat()
+                    }
+                print(f"[INFO] ✓ Predictions generated and cached for {ticker}")
+                
+            except Exception as e:
+                print(f"[ERROR] Failed to generate predictions: {str(e)}")
+                return jsonify({
+                    'error': 'Failed to generate predictions. Please try using the main forecast endpoint first.',
+                    'details': str(e)
+                }), 500
+        
+        # Get predictions from cache
+        with prediction_lock:
+            predictions = prediction_cache[ticker]['predictions']
+        
+        # Generate forecast dates
+        last_date = df['Date'].iloc[-1]
+        steps = Config.FORECAST_HORIZONS[horizon]
+        future_dates = pd.date_range(start=last_date + timedelta(days=1), periods=steps, freq='D')
+        
+        # Create candlestick chart
+        fig = go.Figure()
+        
+        # Historical candlestick
+        fig.add_trace(go.Candlestick(
+            x=df['Date'],
+            open=df['Open'],
+            high=df['High'],
+            low=df['Low'],
+            close=df['Close'],
+            name='Actual',
+            increasing_line_color='green',
+            decreasing_line_color='red'
+        ))
+        
+        # Prediction lines for multiple models with error bands
+        ensemble_pred = predictions.get('ensemble', [])
+        lstm_pred = predictions.get('lstm', [])
+        gru_pred = predictions.get('gru', [])
+        arima_pred = predictions.get('arima', [])
+        
+        # Get last actual price for error calculation
+        last_actual = df['Close'].iloc[-1]
+        
+        # Add prediction traces for all models
+        if ensemble_pred:
+            # Ensemble prediction with error band
+            fig.add_trace(go.Scatter(
+                x=future_dates[:len(ensemble_pred)],
+                y=ensemble_pred,
+                mode='lines+markers',
+                name='Ensemble Forecast',
+                line=dict(color='blue', width=3, dash='dash'),
+                marker=dict(size=8)
+            ))
+            
+            # Calculate error bounds (using std of other models as uncertainty)
+            if lstm_pred and gru_pred and arima_pred:
+                # Calculate prediction variance across models
+                all_preds = np.array([ensemble_pred, lstm_pred, gru_pred, arima_pred])
+                pred_std = np.std(all_preds, axis=0)
+                
+                # Upper and lower error bounds
+                upper_bound = ensemble_pred + pred_std
+                lower_bound = ensemble_pred - pred_std
+                
+                # Add error band
+                fig.add_trace(go.Scatter(
+                    x=future_dates[:len(ensemble_pred)],
+                    y=upper_bound,
+                    mode='lines',
+                    name='Prediction Uncertainty',
+                    line=dict(width=0),
+                    showlegend=False,
+                    hoverinfo='skip'
+                ))
+                fig.add_trace(go.Scatter(
+                    x=future_dates[:len(ensemble_pred)],
+                    y=lower_bound,
+                    mode='lines',
+                    name='Error Band',
+                    line=dict(width=0),
+                    fillcolor='rgba(0, 100, 255, 0.2)',
+                    fill='tonexty',
+                    showlegend=True
+                ))
+        
+        # Add other model predictions for comparison
+        if lstm_pred:
+            fig.add_trace(go.Scatter(
+                x=future_dates[:len(lstm_pred)],
+                y=lstm_pred,
+                mode='lines',
+                name='LSTM',
+                line=dict(color='green', width=1.5, dash='dot'),
+                opacity=0.7
+            ))
+        
+        if gru_pred:
+            fig.add_trace(go.Scatter(
+                x=future_dates[:len(gru_pred)],
+                y=gru_pred,
+                mode='lines',
+                name='GRU',
+                line=dict(color='orange', width=1.5, dash='dot'),
+                opacity=0.7
+            ))
+        
+        if arima_pred:
+            fig.add_trace(go.Scatter(
+                x=future_dates[:len(arima_pred)],
+                y=arima_pred,
+                mode='lines',
+                name='ARIMA',
+                line=dict(color='red', width=1.5, dash='dot'),
+                opacity=0.7
+            ))
+        
+        # Add error annotations for multiple time points
+        if ensemble_pred:
+            # Annotate first, middle, and last predictions with error percentages
+            annotation_indices = [0, len(ensemble_pred)//2, len(ensemble_pred)-1] if len(ensemble_pred) > 2 else [0]
+            
+            for idx in annotation_indices:
+                if idx < len(ensemble_pred):
+                    pred_value = ensemble_pred[idx]
+                    error_pct = ((pred_value - last_actual) / last_actual) * 100
+                    
+                    # Color code based on error magnitude
+                    if abs(error_pct) < 2:
+                        bgcolor = 'lightgreen'
+                    elif abs(error_pct) < 5:
+                        bgcolor = 'yellow'
+                    else:
+                        bgcolor = 'orange'
+                    
+                    fig.add_annotation(
+                        x=future_dates[idx],
+                        y=pred_value,
+                        text=f"{error_pct:+.2f}%",
+                        showarrow=True,
+                        arrowhead=2,
+                        arrowsize=1,
+                        arrowwidth=2,
+                        arrowcolor=bgcolor,
+                        ax=0,
+                        ay=-40 if idx % 2 == 0 else 40,
+                        bgcolor=bgcolor,
+                        opacity=0.8,
+                        font=dict(size=10, color='black')
+                    )
+        
+        fig.update_layout(
+            title=f'{ticker} Stock Price - Candlestick with Predictions',
+            xaxis_title='Date',
+            yaxis_title='Price (USD)',
+            xaxis_rangeslider_visible=False,
+            height=600
+        )
+        
+        return jsonify({
+            'status': 'success',
+            'chart': json.loads(fig.to_json())
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Candlestick generation failed: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
