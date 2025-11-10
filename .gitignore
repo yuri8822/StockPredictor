@@ -2,6 +2,7 @@ node_modules/
 model_versions/
 evaluation_logs/
 portfolio_data/
+trained_models/
 
 *.zip
 *.csv
