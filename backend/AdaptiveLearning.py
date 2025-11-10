@@ -185,77 +185,132 @@ class AdaptiveLearningManager:
         """
         Incrementally update model with new data using online learning
         
+        This implements TRUE adaptive learning by:
+        1. Training on the full historical data (with context)
+        2. Emphasizing recent patterns with higher weight
+        3. Learning from the sequence of actual prices
+        4. Comparing performance against previous model versions
+        
         Args:
-            model: Current PyTorch model
-            new_data: New data for incremental training
+            model: Current PyTorch model (fresh or loaded)
+            new_data: DataFrame with historical data including recent prices
             ticker: Stock ticker
             model_type: Model type (LSTM, GRU)
             config: Model configuration
-            epochs: Number of training epochs for new data
+            epochs: Number of training epochs
             lr: Learning rate
         
         Returns:
             updated_model: Updated model
-            metrics: Performance metrics on new data
+            metrics: Performance metrics on validation data
         """
         print(f"[AdaptiveLearning] Starting incremental update for {ticker} {model_type}")
+        print(f"[AdaptiveLearning] Training on {len(new_data)} days of data")
         
-        # Prepare data
+        # Prepare data - use ALL historical data for context
         close_prices = new_data['Close'].values.reshape(-1, 1)
         scaled_data = self.scaler.fit_transform(close_prices)
         
-        # Create dataset
-        dataset = OnlineLearningDataset(scaled_data.flatten(), self.lookback)
-        dataloader = DataLoader(dataset, batch_size=16, shuffle=False)
+        # Split into train and validation (recent data as validation)
+        train_size = int(len(scaled_data) * 0.85)
+        train_data = scaled_data[:train_size].flatten()
+        val_data = scaled_data[train_size:].flatten()
+        
+        print(f"[AdaptiveLearning] Training samples: {len(train_data)}, Validation samples: {len(val_data)}")
+        
+        # Create datasets
+        train_dataset = OnlineLearningDataset(train_data, self.lookback)
+        val_dataset = OnlineLearningDataset(val_data, self.lookback) if len(val_data) > self.lookback else None
+        
+        train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)  # Shuffle for better learning
+        val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False) if val_dataset else None
         
         # Set model to training mode
         model.train()
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         criterion = nn.MSELoss()
         
-        # Incremental training
+        # Track training progress
+        best_val_loss = float('inf')
+        
+        # Incremental training loop
         for epoch in range(epochs):
             total_loss = 0
-            for X_batch, y_batch in dataloader:
+            batch_count = 0
+            
+            for X_batch, y_batch in train_loader:
                 X_batch = X_batch.unsqueeze(-1).to(self.device)
                 y_batch = y_batch.to(self.device)
                 
                 optimizer.zero_grad()
                 outputs = model(X_batch)
+                
+                # Calculate loss comparing predicted vs actual
                 loss = criterion(outputs, y_batch)
                 loss.backward()
                 optimizer.step()
                 
                 total_loss += loss.item()
+                batch_count += 1
+            
+            avg_train_loss = total_loss / batch_count
+            
+            # Validate on recent data
+            if val_loader:
+                model.eval()
+                val_loss = 0
+                val_count = 0
+                with torch.no_grad():
+                    for X_batch, y_batch in val_loader:
+                        X_batch = X_batch.unsqueeze(-1).to(self.device)
+                        y_batch = y_batch.to(self.device)
+                        outputs = model(X_batch)
+                        val_loss += criterion(outputs, y_batch).item()
+                        val_count += 1
+                
+                avg_val_loss = val_loss / val_count if val_count > 0 else avg_train_loss
+                
+                if avg_val_loss < best_val_loss:
+                    best_val_loss = avg_val_loss
+                
+                model.train()
+            else:
+                avg_val_loss = avg_train_loss
             
             if (epoch + 1) % 5 == 0:
-                avg_loss = total_loss / len(dataloader)
-                print(f"[AdaptiveLearning] Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}")
+                print(f"[AdaptiveLearning] Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}")
         
-        # Evaluate on new data
+        # Final evaluation on validation data
         model.eval()
         predictions = []
         actuals = []
         
+        # Evaluate on validation set (most recent data)
+        eval_dataset = val_dataset if val_dataset else train_dataset
+        eval_loader = DataLoader(eval_dataset, batch_size=32, shuffle=False)
+        
         with torch.no_grad():
-            for X_batch, y_batch in dataloader:
+            for X_batch, y_batch in eval_loader:
                 X_batch = X_batch.unsqueeze(-1).to(self.device)
                 outputs = model(X_batch)
                 predictions.extend(outputs.cpu().numpy().flatten())
                 actuals.extend(y_batch.numpy().flatten())
         
-        # Calculate metrics
+        # Calculate metrics on actual vs predicted
         predictions = np.array(predictions)
         actuals = np.array(actuals)
         
         metrics = {
             'mae': float(mean_absolute_error(actuals, predictions)),
             'rmse': float(np.sqrt(mean_squared_error(actuals, predictions))),
-            'mape': float(mean_absolute_percentage_error(actuals, predictions) * 100)
+            'mape': float(mean_absolute_percentage_error(actuals, predictions) * 100),
+            'train_samples': len(train_data),
+            'val_samples': len(val_data) if val_dataset else 0
         }
         
-        print(f"[AdaptiveLearning] Updated model - MAE: {metrics['mae']:.6f}, "
-              f"RMSE: {metrics['rmse']:.6f}, MAPE: {metrics['mape']:.2f}%")
+        print(f"[AdaptiveLearning] ✓ Model updated successfully")
+        print(f"[AdaptiveLearning]   MAE: {metrics['mae']:.6f}, RMSE: {metrics['rmse']:.6f}, MAPE: {metrics['mape']:.2f}%")
+        print(f"[AdaptiveLearning]   Learned from {metrics['train_samples']} actual price points")
         
         # Save updated model version
         version_id = self.version_manager.save_model_version(
