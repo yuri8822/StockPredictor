@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
   Container,
@@ -12,8 +12,9 @@ import {
   CircularProgress,
   Card,
   CardContent,
+  Chip,
 } from '@mui/material';
-import { TrendingUp, Analytics, Timeline } from '@mui/icons-material';
+import { TrendingUp, Analytics, Timeline, Refresh } from '@mui/icons-material';
 import axios from 'axios';
 import Plot from 'react-plotly.js';
 
@@ -27,6 +28,11 @@ const StockForecasting = () => {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState(null);
+  const [nextUpdate, setNextUpdate] = useState(null);
+  const intervalRef = useRef(null);
+  const currentTickerRef = useRef(null);
 
   const horizonOptions = [
     { value: '1hr', label: '1 Day Ahead' },
@@ -34,6 +40,45 @@ const StockForecasting = () => {
     { value: '24hrs', label: '24 Days Ahead' },
     { value: '72hrs', label: '72 Days Ahead' }
   ];
+
+  // Auto-refresh effect
+  useEffect(() => {
+    if (autoRefresh && currentTickerRef.current) {
+      // Fetch latest predictions every 60 seconds
+      intervalRef.current = setInterval(() => {
+        fetchLatestPredictions(currentTickerRef.current);
+      }, 60000); // 60 seconds
+
+      return () => {
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+        }
+      };
+    } else {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    }
+  }, [autoRefresh]);
+
+  const fetchLatestPredictions = async (ticker) => {
+    try {
+      console.log(`[AUTO-REFRESH] Fetching latest predictions for ${ticker}`);
+      const response = await axios.get(`http://localhost:5000/api/latest/${ticker}`);
+      
+      if (response.data) {
+        console.log('[AUTO-REFRESH] Updated predictions received');
+        setResults(response.data);
+        setLastUpdate(response.data.updated_at);
+        setNextUpdate(response.data.next_update);
+        setError(null);
+      }
+    } catch (err) {
+      console.error('[AUTO-REFRESH] Failed to fetch latest predictions:', err);
+      // Don't show error for auto-refresh failures
+    }
+  };
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -48,6 +93,7 @@ const StockForecasting = () => {
     setLoading(true);
     setError(null);
     setResults(null);
+    setAutoRefresh(false); // Stop auto-refresh during new forecast
 
     try {
       const response = await axios.post('http://localhost:5000/api/forecast', {
@@ -57,20 +103,15 @@ const StockForecasting = () => {
       });
 
       console.log('Received response:', response.data);
-      console.log('Metrics available:', response.data?.metrics ? Object.keys(response.data.metrics) : 'None');
-      console.log('Chart available:', response.data?.chart ? 'Yes' : 'No');
-      console.log('Full response structure:', {
-        hasChart: !!response.data?.chart,
-        hasMetrics: !!response.data?.metrics,
-        hasDatasetInfo: !!response.data?.dataset_info,
-        hasPredictions: !!response.data?.predictions,
-        chartDataLength: response.data?.chart?.data?.length,
-        metricsKeys: response.data?.metrics ? Object.keys(response.data.metrics) : []
-      });
       
       setResults(response.data);
+      setLastUpdate(response.data.updated_at);
+      setNextUpdate(response.data.next_update);
+      currentTickerRef.current = formData.ticker.toUpperCase();
+      setAutoRefresh(true); // Start auto-refresh after successful forecast
     } catch (err) {
       setError(err.response?.data?.error || 'An error occurred while generating the forecast');
+      setAutoRefresh(false);
     } finally {
       setLoading(false);
     }
@@ -88,7 +129,7 @@ const StockForecasting = () => {
     return (
       <Grid container spacing={3} sx={{ mb: 4 }}>
         {models.map(model => (
-          <Grid item xs={12} md={3} key={model}>
+          <Grid size={{ xs: 12, md: 3 }} key={model}>
             <Card>
               <CardContent>
                 <Typography variant="h6" gutterBottom sx={{ 
@@ -155,11 +196,50 @@ const StockForecasting = () => {
         </Alert>
       </Box>
 
+      {/* Auto-refresh Status */}
+      {autoRefresh && currentTickerRef.current && (
+        <Paper sx={{ p: 2, mb: 4, backgroundColor: '#e8f5e9', borderLeft: '4px solid #4caf50' }}>
+          <Grid container spacing={2} alignItems="center">
+            <Grid size={{ xs: 12, md: 6 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Refresh sx={{ color: '#2e7d32', animation: 'spin 2s linear infinite' }} />
+                <Typography variant="body1" sx={{ color: '#2e7d32', fontWeight: 'bold' }}>
+                  Auto-updating predictions for {currentTickerRef.current}
+                </Typography>
+              </Box>
+            </Grid>
+            <Grid size={{ xs: 12, md: 6 }}>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                {lastUpdate && (
+                  <Typography variant="body2" sx={{ color: '#2e7d32' }}>
+                    Last updated: {new Date(lastUpdate).toLocaleTimeString()}
+                  </Typography>
+                )}
+                {nextUpdate && (
+                  <Typography variant="body2" sx={{ color: '#2e7d32' }}>
+                    Next update: {new Date(nextUpdate).toLocaleTimeString()}
+                  </Typography>
+                )}
+              </Box>
+            </Grid>
+          </Grid>
+        </Paper>
+      )}
+
+      <style>
+        {`
+          @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+          }
+        `}
+      </style>
+
       {/* Form */}
       <Paper sx={{ p: 4, mb: 4 }}>
         <Box component="form" onSubmit={handleSubmit}>
           <Grid container spacing={3} alignItems="end">
-            <Grid item xs={12} sm={6} md={3}>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <TextField
                 fullWidth
                 label="Ticker Symbol"
@@ -171,7 +251,7 @@ const StockForecasting = () => {
               />
             </Grid>
             
-            <Grid item xs={12} sm={6} md={3}>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <TextField
                 fullWidth
                 select
@@ -189,7 +269,7 @@ const StockForecasting = () => {
               </TextField>
             </Grid>
             
-            <Grid item xs={12} sm={6} md={3}>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <TextField
                 fullWidth
                 type="number"
@@ -202,7 +282,7 @@ const StockForecasting = () => {
               />
             </Grid>
             
-            <Grid item xs={12} sm={6} md={3}>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <Button
                 type="submit"
                 variant="contained"

@@ -5,6 +5,7 @@ import warnings
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 import glob
+from threading import Lock
 
 import numpy as np
 import pandas as pd
@@ -13,6 +14,8 @@ from flask_cors import CORS
 from pymongo import MongoClient
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 
 # ML imports
 from sklearn.preprocessing import MinMaxScaler
@@ -698,15 +701,150 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = Config.SECRET_KEY
 
 # Enable CORS for React frontend
-CORS(app, origins=["http://localhost:3000"])
+CORS(app, origins=["http://localhost:5173"])
 
 db_manager = DatabaseManager()
+
+# ===========================
+# Background Prediction Updates
+# ===========================
+# Cache for storing latest predictions
+prediction_cache = {}
+prediction_lock = Lock()
+active_tickers = set()  # Tickers that should be continuously updated
+
+# Background scheduler for continuous predictions
+scheduler = BackgroundScheduler()
+scheduler.start()
+
+def update_predictions_for_ticker(ticker: str, horizon: str = '24hrs', days: int = 90):
+    """Background task to update predictions for a ticker"""
+    try:
+        with prediction_lock:
+            print(f"\n[BACKGROUND] Updating predictions for {ticker} at {datetime.now().strftime('%H:%M:%S')}")
+        
+        steps = Config.FORECAST_HORIZONS[horizon]
+        
+        # Load curated dataset (will run StockDataCollector.py if needed)
+        df = CuratedDataLoader.load_curated_dataset(ticker, days)
+        df = CuratedDataLoader.prepare_for_forecasting(df)
+        
+        if df.empty or len(df) < 30:
+            print(f"[BACKGROUND] Insufficient data for {ticker}")
+            return
+        
+        # Prepare training data
+        train_size = int(len(df) * 0.8)
+        train_data = df['Close'].values[:train_size]
+        test_data = df['Close'].values[train_size:train_size + steps]
+        
+        # Train ensemble model
+        ensemble = EnsembleForecaster()
+        ensemble.fit(train_data)
+        
+        # Generate predictions
+        predictions = ensemble.predict(steps, train_data)
+        
+        # Calculate metrics
+        metrics = {}
+        for model_name, pred_values in predictions.items():
+            if len(test_data) >= len(pred_values):
+                metrics[model_name] = ModelEvaluator.calculate_metrics(
+                    test_data[:len(pred_values)], pred_values
+                )
+            else:
+                # Use last known values for validation
+                last_vals = train_data[-steps:]
+                if len(pred_values) > len(last_vals):
+                    pred_subset = pred_values[:len(last_vals)]
+                else:
+                    last_vals = last_vals[-len(pred_values):]
+                    pred_subset = pred_values
+                
+                metrics[model_name] = ModelEvaluator.calculate_metrics(last_vals, pred_subset)
+        
+        # Create chart data
+        chart_data = ChartGenerator.create_candlestick_with_forecast(df.tail(100), predictions, horizon, ticker)
+        
+        # Store in cache
+        with prediction_lock:
+            prediction_cache[ticker] = {
+                'ticker': ticker,
+                'horizon': horizon,
+                'predictions': {k: v.tolist() if hasattr(v, 'tolist') else v for k, v in predictions.items()},
+                'metrics': metrics,
+                'chart': chart_data,
+                'dataset_info': {
+                    'total_rows': len(df),
+                    'date_range': f"{df['Date'].min()} to {df['Date'].max()}",
+                    'features': [col for col in df.columns if col not in ['Date']]
+                },
+                'updated_at': datetime.now().isoformat(),
+                'next_update': (datetime.now() + timedelta(minutes=5)).isoformat()
+            }
+        
+        print(f"[BACKGROUND] Successfully updated predictions for {ticker}")
+        
+    except Exception as e:
+        print(f"[BACKGROUND ERROR] Failed to update {ticker}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+def schedule_ticker_updates(ticker: str, horizon: str = '24hrs', days: int = 90):
+    """Schedule periodic updates for a ticker"""
+    job_id = f"update_{ticker}_{horizon}"
+    
+    # Remove existing job if any
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+    
+    # Add new job - update every 5 minutes (typical market data update interval)
+    scheduler.add_job(
+        func=update_predictions_for_ticker,
+        trigger=IntervalTrigger(minutes=5),
+        id=job_id,
+        args=[ticker, horizon, days],
+        replace_existing=True
+    )
+    
+    print(f"[SCHEDULER] Scheduled updates for {ticker} every 5 minutes")
 
 # HTML template removed - now using React frontend
 
 @app.route('/api/health')
 def health_check():
     return jsonify({'status': 'ok', 'message': 'Stock Forecasting API is running'})
+
+@app.route('/api/latest/<ticker>', methods=['GET'])
+def get_latest_prediction(ticker):
+    """Get the latest cached prediction for a ticker without recomputing"""
+    ticker = ticker.upper()
+    
+    with prediction_lock:
+        if ticker not in prediction_cache:
+            return jsonify({
+                'error': f'No predictions available for {ticker}. Please generate a forecast first.'
+            }), 404
+        
+        cached_data = prediction_cache[ticker].copy()
+    
+    print(f"[API] Serving cached prediction for {ticker} (updated at {cached_data.get('updated_at', 'unknown')})")
+    return jsonify(cached_data)
+
+@app.route('/api/active-tickers', methods=['GET'])
+def get_active_tickers():
+    """Get list of tickers with active continuous predictions"""
+    with prediction_lock:
+        tickers_info = []
+        for ticker in active_tickers:
+            if ticker in prediction_cache:
+                tickers_info.append({
+                    'ticker': ticker,
+                    'updated_at': prediction_cache[ticker].get('updated_at'),
+                    'next_update': prediction_cache[ticker].get('next_update')
+                })
+    
+    return jsonify({'active_tickers': tickers_info})
 
 @app.route('/api/forecast', methods=['POST'])
 def forecast():
@@ -833,6 +971,16 @@ def forecast():
             }
         
         print(f"{'='*60}\n")
+        
+        # Schedule continuous updates for this ticker
+        with prediction_lock:
+            active_tickers.add(ticker)
+            prediction_cache[ticker] = response_data
+            prediction_cache[ticker]['updated_at'] = datetime.now().isoformat()
+            prediction_cache[ticker]['next_update'] = (datetime.now() + timedelta(minutes=5)).isoformat()
+        
+        schedule_ticker_updates(ticker, horizon, days)
+        print(f"[INFO] Scheduled continuous updates for {ticker} every 5 minutes")
         
         return jsonify(response_data)
         

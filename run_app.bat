@@ -2,7 +2,7 @@
 echo Starting Backend and Frontend...
 
 start "Backend" cmd /c "cd backend && pip install -r requirements.txt && python start_server.py"
-start "Frontend" cmd /c "cd frontend && npm i && npm start"
+start "Frontend" cmd /c "cd frontend && npm i && npm run dev"
 
 echo Both servers started!
 exit
