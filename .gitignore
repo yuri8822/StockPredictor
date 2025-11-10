@@ -1,4 +1,7 @@
 node_modules/
+model_versions/
+evaluation_logs/
+portfolio_data/
 
 *.zip
 *.csv

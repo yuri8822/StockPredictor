@@ -782,6 +782,21 @@ app.config['SECRET_KEY'] = Config.SECRET_KEY
 # Enable CORS for React frontend
 CORS(app, origins=["http://localhost:5173"])
 
+def sanitize_for_json(obj):
+    """Convert non-JSON-serializable values like Infinity and NaN to JSON-safe values"""
+    if isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_for_json(item) for item in obj]
+    elif isinstance(obj, float):
+        if np.isnan(obj) or np.isinf(obj):
+            return None  # Convert Infinity and NaN to null
+        return obj
+    elif isinstance(obj, (np.integer, np.floating)):
+        return float(obj)
+    else:
+        return obj
+
 db_manager = DatabaseManager()
 
 # ===========================
@@ -1037,6 +1052,9 @@ def forecast():
         print("\n[INFO] 🔄 ADAPTIVE LEARNING ACTIVATED")
         print("[INFO] Checking for existing trained models...")
         
+        # Initialize metrics logger
+        metrics_logger = MetricsLogger()
+        
         # Check if we have recent model versions for this ticker
         existing_versions = model_version_manager.get_version_history(ticker)
         
@@ -1097,10 +1115,26 @@ def forecast():
                     ensemble.arima = ARIMAForecaster()
                     ensemble.arima.fit(train_data)
                     
+                    # Create forecaster wrappers for the trained neural models
+                    # These wrappers have the predict() method needed
+                    lstm_forecaster = LSTMForecaster(lookback=10)
+                    lstm_forecaster.model = lstm_model
+                    lstm_forecaster.scaler = adaptive_learning_manager.scaler
+                    lstm_forecaster.device = adaptive_learning_manager.device
+                    
+                    gru_forecaster = GRUForecaster(lookback=10)
+                    gru_forecaster.model = gru_model
+                    gru_forecaster.scaler = adaptive_learning_manager.scaler
+                    gru_forecaster.device = adaptive_learning_manager.device
+                    
+                    # Assign forecasters to ensemble
+                    ensemble.lstm_forecaster = lstm_forecaster
+                    ensemble.gru_forecaster = gru_forecaster
+                    
                     # Get predictions from all models
                     arima_pred = ensemble.arima.predict(steps)
-                    lstm_pred = ensemble.lstm.predict(steps, train_data) 
-                    gru_pred = ensemble.gru.predict(steps, train_data)
+                    lstm_pred = lstm_forecaster.predict(steps, train_data) 
+                    gru_pred = gru_forecaster.predict(steps, train_data)
                     
                     # Adaptive ensemble weighting based on recent performance
                     total_error = lstm_metrics['mae'] + gru_metrics['mae'] + 1e-6
@@ -1131,10 +1165,100 @@ def forecast():
         else:
             # No existing models - train from scratch
             print("[INFO] No existing models found - training from scratch")
-            print("[INFO] Future forecasts will use incremental learning ✨")
+            print("[INFO] 🆕 This is the first training - model versions will be saved")
+            
+            # Create models
+            lstm_model = LSTMModel(input_size=1, hidden_size=64, num_layers=2)
+            gru_model = GRUModel(input_size=1, hidden_size=64, num_layers=2)
+            
+            config = {'input_size': 1, 'hidden_size': 64, 'num_layers': 2}
+            
+            # Train and save LSTM model version
+            print("[INFO] 📈 Training LSTM model (initial version)...")
+            lstm_model, lstm_metrics = adaptive_learning_manager.incremental_update(
+                lstm_model, df, ticker, 'LSTM', config, epochs=15, lr=0.001
+            )
+            
+            # Train and save GRU model version
+            print("[INFO] 📈 Training GRU model (initial version)...")
+            gru_model, gru_metrics = adaptive_learning_manager.incremental_update(
+                gru_model, df, ticker, 'GRU', config, epochs=15, lr=0.001
+            )
+            
+            # Train ARIMA
+            print("[INFO] 📈 Training ARIMA model...")
             ensemble = EnsembleForecaster()
-            ensemble.fit(train_data)
-            predictions = ensemble.predict(steps, train_data)
+            ensemble.arima = ARIMAForecaster()
+            ensemble.arima.fit(train_data)
+            
+            # Get predictions from all models
+            arima_pred = ensemble.arima.predict(steps)
+            
+            # Calculate ARIMA metrics and save version
+            if len(test_data) >= len(arima_pred):
+                arima_test_metrics = ModelEvaluator.calculate_metrics(
+                    test_data[:len(arima_pred)], arima_pred
+                )
+            else:
+                arima_test_metrics = ModelEvaluator.calculate_metrics(
+                    train_data[-len(arima_pred):], arima_pred
+                )
+            
+            # Save ARIMA model version
+            arima_config = {'order': ensemble.arima.order}
+            arima_version_id = model_version_manager.save_model_version(
+                ensemble.arima, ticker, 'ARIMA', arima_test_metrics, arima_config
+            )
+            print(f"[INFO] 💾 ARIMA model version saved: {arima_version_id}")
+            
+            # Create forecaster wrappers for the trained neural models
+            lstm_forecaster = LSTMForecaster(lookback=10)
+            lstm_forecaster.model = lstm_model
+            lstm_forecaster.scaler = adaptive_learning_manager.scaler
+            lstm_forecaster.device = adaptive_learning_manager.device
+            
+            gru_forecaster = GRUForecaster(lookback=10)
+            gru_forecaster.model = gru_model
+            gru_forecaster.scaler = adaptive_learning_manager.scaler
+            gru_forecaster.device = adaptive_learning_manager.device
+            
+            # Assign forecasters to ensemble
+            ensemble.lstm_forecaster = lstm_forecaster
+            ensemble.gru_forecaster = gru_forecaster
+            
+            # Get predictions using forecasters
+            lstm_pred = lstm_forecaster.predict(steps, train_data)
+            gru_pred = gru_forecaster.predict(steps, train_data)
+            
+            # Simple ensemble for first time
+            ensemble_pred = (arima_pred + lstm_pred + gru_pred) / 3
+            
+            # Save ensemble metrics
+            if len(test_data) >= len(ensemble_pred):
+                ensemble_test_metrics = ModelEvaluator.calculate_metrics(
+                    test_data[:len(ensemble_pred)], ensemble_pred
+                )
+            else:
+                ensemble_test_metrics = ModelEvaluator.calculate_metrics(
+                    train_data[-len(ensemble_pred):], ensemble_pred
+                )
+            
+            ensemble_config = {
+                'lstm_weight': 1/3,
+                'gru_weight': 1/3,
+                'arima_weight': 1/3
+            }
+            # Note: Ensemble is a combination, not saved as separate model
+            
+            predictions = {
+                'arima': arima_pred,
+                'lstm': lstm_pred,
+                'gru': gru_pred,
+                'ensemble': ensemble_pred
+            }
+            
+            print("[INFO] ✓ Initial model versions saved successfully")
+            print("[INFO] ✨ Future forecasts will use incremental learning")
         
         print("[INFO] ✓ Model training/update complete")
         # ================================================================
@@ -1214,15 +1338,11 @@ def forecast():
             if current_mae > avg_recent_mae * 1.15:
                 print(f"[WARN] ⚠️ Performance degradation detected!")
                 print(f"       Current MAE: {current_mae:.6f} vs Avg: {avg_recent_mae:.6f}")
-                print(f"[INFO] 🔧 Triggering fine-tuning for performance improvement...")
+                print(f"[INFO] 🔧 Fine-tuning recommended for performance improvement")
+                print(f"[INFO] 💡 Alert: MAE increased by {((current_mae/avg_recent_mae - 1) * 100):.1f}% - consider retraining")
                 
-                # Trigger fine-tuning (will happen on next forecast)
-                performance_monitor.add_alert(
-                    ticker=ticker,
-                    model_type='ensemble',
-                    severity='warning',
-                    message=f"MAE increased by {((current_mae/avg_recent_mae - 1) * 100):.1f}% - consider retraining"
-                )
+                # Note: Alerts are automatically generated by PerformanceMonitor._generate_alerts()
+                # which is called when fetching dashboard data
             else:
                 print(f"[INFO] ✓ Model performance is stable (MAE: {current_mae:.6f})")
         else:
@@ -1377,6 +1497,144 @@ def get_model_versions(ticker):
         })
         
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/adaptive-learning/status/<ticker>', methods=['GET'])
+def get_adaptive_learning_status(ticker):
+    """
+    Get comprehensive adaptive learning status including:
+    - Current model versions and their performance
+    - Improvement metrics over time
+    - Learning progress and statistics
+    - Ensemble weights if available
+    """
+    try:
+        ticker = ticker.upper()
+        
+        # Get version history for all model types
+        all_versions = model_version_manager.get_version_history(ticker)
+        
+        # Get best versions for each model type
+        model_types = ['LSTM', 'GRU', 'ARIMA', 'Ensemble']
+        best_models = {}
+        improvement_stats = {}
+        
+        for model_type in model_types:
+            model_versions = [v for v in all_versions if v['model_type'] == model_type]
+            
+            if model_versions:
+                # Sort by timestamp to get chronological order
+                sorted_versions = sorted(model_versions, key=lambda x: x['timestamp'])
+                
+                best_version_id = model_version_manager.get_best_version(ticker, model_type)
+                best_version = next((v for v in model_versions if v['version_id'] == best_version_id), None)
+                
+                # Calculate improvement
+                if len(sorted_versions) >= 2:
+                    first_mae = sorted_versions[0]['metrics'].get('mae', 0)
+                    latest_mae = sorted_versions[-1]['metrics'].get('mae', 0)
+                    improvement_pct = ((first_mae - latest_mae) / first_mae * 100) if first_mae > 0 else 0
+                    
+                    improvement_stats[model_type] = {
+                        'initial_mae': first_mae,
+                        'current_mae': latest_mae,
+                        'improvement_percentage': improvement_pct,
+                        'total_updates': len(sorted_versions),
+                        'first_version_date': sorted_versions[0]['timestamp'],
+                        'latest_version_date': sorted_versions[-1]['timestamp']
+                    }
+                
+                best_models[model_type] = best_version if best_version else sorted_versions[-1]
+        
+        # Get ensemble weights if available
+        ensemble_info = None
+        if ticker in adaptive_learning_manager.ensemble_weights:
+            ensemble_info = adaptive_learning_manager.ensemble_weights[ticker]
+        
+        # Calculate overall statistics
+        total_versions = len(all_versions)
+        avg_improvement = np.mean([stats['improvement_percentage'] 
+                                   for stats in improvement_stats.values()]) if improvement_stats else 0
+        
+        # Learning status explanation
+        learning_steps = [
+            {
+                "step": 1,
+                "title": "Data Collection",
+                "description": "Collecting historical stock data including prices, volume, and market indicators",
+                "status": "completed",
+                "details": f"Loaded {len(all_versions)} model versions with training data"
+            },
+            {
+                "step": 2,
+                "title": "Baseline Training",
+                "description": "Training initial models (LSTM, GRU, ARIMA) on historical data",
+                "status": "completed" if best_models else "pending",
+                "details": f"Trained {len(best_models)} model types"
+            },
+            {
+                "step": 3,
+                "title": "Incremental Learning",
+                "description": "Continuously updating models as new data becomes available",
+                "status": "active" if total_versions > 0 else "pending",
+                "details": f"Performed {total_versions} incremental updates"
+            },
+            {
+                "step": 4,
+                "title": "Performance Monitoring",
+                "description": "Tracking prediction accuracy and comparing with actual values",
+                "status": "active" if improvement_stats else "pending",
+                "details": f"Average improvement: {avg_improvement:.2f}%"
+            },
+            {
+                "step": 5,
+                "title": "Adaptive Weighting",
+                "description": "Dynamically adjusting model weights based on recent performance",
+                "status": "active" if ensemble_info else "pending",
+                "details": "Ensemble uses performance-based weighting" if ensemble_info else "Waiting for ensemble data"
+            }
+        ]
+        
+        response_data = {
+            'status': 'success',
+            'ticker': ticker,
+            'learning_status': {
+                'total_model_versions': total_versions,
+                'average_improvement': avg_improvement,
+                'active_model_types': len(best_models),
+                'last_update': all_versions[0]['timestamp'] if all_versions else None
+            },
+            'best_models': best_models,
+            'improvement_stats': improvement_stats,
+            'ensemble_weights': ensemble_info,
+            'learning_process': learning_steps,
+            'explanation': {
+                'how_it_works': [
+                    "Models learn from sequences of actual historical prices",
+                    "Each update uses 85% of data for training, 15% for validation",
+                    "The model learns patterns: Given prices at t-10 to t, predict t+1",
+                    "Validation against recent data ensures the model generalizes well",
+                    "Better performing models get saved and tracked over time"
+                ],
+                'adaptive_features': [
+                    "Incremental updates: Models improve without full retraining",
+                    "Version tracking: All model versions are saved with metrics",
+                    "Performance-based selection: Best model is automatically chosen",
+                    "Ensemble learning: Multiple models combine for better predictions",
+                    "Dynamic weighting: Better models get higher weight in ensemble"
+                ]
+            }
+        }
+        
+        # Sanitize the response to remove Infinity and NaN values
+        response_data = sanitize_for_json(response_data)
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        print(f"[ERROR] Adaptive learning status failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/evaluation/dashboard/<ticker>', methods=['GET'])

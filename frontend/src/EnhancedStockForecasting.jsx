@@ -32,9 +32,11 @@ import {
   ShowChart,
   Refresh,
   PlayArrow,
+  Psychology,
 } from '@mui/icons-material';
 import axios from 'axios';
 import Plot from 'react-plotly.js';
+import AdaptiveLearningExplainer from './AdaptiveLearningExplainer';
 
 const EnhancedStockForecasting = () => {
   const [activeTab, setActiveTab] = useState(0);
@@ -44,6 +46,7 @@ const EnhancedStockForecasting = () => {
   const [portfolioData, setPortfolioData] = useState(null);
   const [dashboardData, setDashboardData] = useState(null);
   const [candlestickData, setCandlestickData] = useState(null);
+  const [adaptiveLearningData, setAdaptiveLearningData] = useState(null);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
 
@@ -66,6 +69,16 @@ const EnhancedStockForecasting = () => {
         days: 90,
       });
       setForecastData(response.data);
+      
+      // Automatically refresh adaptive learning data after forecast generation
+      // This ensures the Adaptive Learning tab shows the latest model versions
+      try {
+        const adaptiveResponse = await axios.get(`${API_BASE}/adaptive-learning/status/${ticker.toUpperCase()}`);
+        setAdaptiveLearningData(adaptiveResponse.data);
+        setLastUpdated(new Date().toLocaleTimeString());
+      } catch (adaptiveErr) {
+        console.error('Failed to refresh adaptive learning data:', adaptiveErr);
+      }
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to fetch forecast');
     } finally {
@@ -92,10 +105,25 @@ const EnhancedStockForecasting = () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await axios.get(`${API_BASE}/evaluation/dashboard/${ticker}?days=30`);
+      const response = await axios.get(`${API_BASE}/evaluation/dashboard/${ticker.toUpperCase()}?days=30`);
       setDashboardData(response.data);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to fetch dashboard');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Fetch adaptive learning status
+  const fetchAdaptiveLearning = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await axios.get(`${API_BASE}/adaptive-learning/status/${ticker.toUpperCase()}`);
+      setAdaptiveLearningData(response.data);
+      setLastUpdated(new Date().toLocaleTimeString());
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to fetch adaptive learning data');
     } finally {
       setLoading(false);
     }
@@ -106,7 +134,7 @@ const EnhancedStockForecasting = () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await axios.get(`${API_BASE}/candlestick/${ticker}?days=90&horizon=24hrs`);
+      const response = await axios.get(`${API_BASE}/candlestick/${ticker.toUpperCase()}?days=90&horizon=24hrs`);
       setCandlestickData(response.data.chart);
       setLastUpdated(new Date().toLocaleTimeString());
     } catch (err) {
@@ -187,6 +215,8 @@ const EnhancedStockForecasting = () => {
       fetchDashboard();
     } else if (activeTab === 2) {
       fetchPortfolio();
+    } else if (activeTab === 3 && ticker) {
+      fetchAdaptiveLearning();
     }
   }, [activeTab, ticker]);
 
@@ -199,7 +229,7 @@ const EnhancedStockForecasting = () => {
       {/* Ticker Selection */}
       <Paper sx={{ p: 3, mb: 3 }}>
         <Grid container spacing={2} alignItems="center">
-          <Grid item xs={12} md={4}>
+          <Grid size={{ xs: 12, md: 4 }}>
             <TextField
               fullWidth
               label="Stock Ticker"
@@ -209,7 +239,7 @@ const EnhancedStockForecasting = () => {
               variant="outlined"
             />
           </Grid>
-          <Grid item xs={12} md={8}>
+          <Grid size={{ xs: 12, md: 8 }}>
             <Box sx={{ display: 'flex', gap: 2 }}>
               <Button
                 variant="contained"
@@ -226,6 +256,7 @@ const EnhancedStockForecasting = () => {
                   if (activeTab === 0) fetchCandlestick();
                   else if (activeTab === 1) fetchDashboard();
                   else if (activeTab === 2) fetchPortfolio();
+                  else if (activeTab === 3) fetchAdaptiveLearning();
                 }}
                 disabled={loading}
               >
@@ -248,6 +279,7 @@ const EnhancedStockForecasting = () => {
           <Tab label="Candlestick & Predictions" icon={<ShowChart />} />
           <Tab label="Evaluation Dashboard" icon={<Assessment />} />
           <Tab label="Portfolio Management" icon={<AccountBalance />} />
+          <Tab label="Adaptive Learning" icon={<Psychology />} />
         </Tabs>
       </Paper>
 
@@ -315,7 +347,7 @@ const EnhancedStockForecasting = () => {
           {/* Summary Cards */}
           {dashboardData && dashboardData.summary && (
             <>
-              <Grid item xs={12} md={4}>
+              <Grid size={{ xs: 12, md: 4 }}>
                 <Card>
                   <CardContent>
                     <Typography color="text.secondary" gutterBottom>
@@ -327,7 +359,7 @@ const EnhancedStockForecasting = () => {
                   </CardContent>
                 </Card>
               </Grid>
-              <Grid item xs={12} md={4}>
+              <Grid size={{ xs: 12, md: 4 }}>
                 <Card>
                   <CardContent>
                     <Typography color="text.secondary" gutterBottom>
@@ -339,7 +371,7 @@ const EnhancedStockForecasting = () => {
                   </CardContent>
                 </Card>
               </Grid>
-              <Grid item xs={12} md={4}>
+              <Grid size={{ xs: 12, md: 4 }}>
                 <Card>
                   <CardContent>
                     <Typography color="text.secondary" gutterBottom>
@@ -356,7 +388,7 @@ const EnhancedStockForecasting = () => {
 
           {/* Model Performance */}
           {dashboardData && dashboardData.model_performance && (
-            <Grid item xs={12}>
+            <Grid size={{ xs: 12 }}>
               <Paper sx={{ p: 3 }}>
                 <Typography variant="h5" gutterBottom>
                   Model Performance Comparison
@@ -403,7 +435,7 @@ const EnhancedStockForecasting = () => {
 
           {/* Alerts */}
           {dashboardData && dashboardData.alerts && dashboardData.alerts.length > 0 && (
-            <Grid item xs={12}>
+            <Grid size={{ xs: 12 }}>
               <Paper sx={{ p: 3 }}>
                 <Typography variant="h5" gutterBottom>
                   ⚠️ Performance Alerts
@@ -419,7 +451,7 @@ const EnhancedStockForecasting = () => {
 
           {/* Metrics Time Series */}
           {dashboardData && dashboardData.time_series && dashboardData.time_series.length > 0 && (
-            <Grid item xs={12}>
+            <Grid size={{ xs: 12 }}>
               <Paper sx={{ p: 3 }}>
                 <Typography variant="h5" gutterBottom>
                   Metrics Over Time
@@ -465,7 +497,7 @@ const EnhancedStockForecasting = () => {
           {/* Portfolio Metrics */}
           {portfolioData && portfolioData.metrics && (
             <>
-              <Grid item xs={12} md={3}>
+              <Grid size={{ xs: 12, md: 3 }}>
                 <Card sx={{ bgcolor: 'primary.light', color: 'white' }}>
                   <CardContent>
                     <Typography color="inherit" gutterBottom>
@@ -480,7 +512,7 @@ const EnhancedStockForecasting = () => {
                   </CardContent>
                 </Card>
               </Grid>
-              <Grid item xs={12} md={3}>
+              <Grid size={{ xs: 12, md: 3 }}>
                 <Card>
                   <CardContent>
                     <Typography color="text.secondary" gutterBottom>
@@ -492,7 +524,7 @@ const EnhancedStockForecasting = () => {
                   </CardContent>
                 </Card>
               </Grid>
-              <Grid item xs={12} md={3}>
+              <Grid size={{ xs: 12, md: 3 }}>
                 <Card>
                   <CardContent>
                     <Typography color="text.secondary" gutterBottom>
@@ -504,7 +536,7 @@ const EnhancedStockForecasting = () => {
                   </CardContent>
                 </Card>
               </Grid>
-              <Grid item xs={12} md={3}>
+              <Grid size={{ xs: 12, md: 3 }}>
                 <Card>
                   <CardContent>
                     <Typography color="text.secondary" gutterBottom>
@@ -520,13 +552,13 @@ const EnhancedStockForecasting = () => {
           )}
 
           {/* Trading Actions */}
-          <Grid item xs={12}>
+          <Grid size={{ xs: 12 }}>
             <Paper sx={{ p: 3 }}>
               <Typography variant="h5" gutterBottom>
                 Trading Actions
               </Typography>
               <Grid container spacing={2}>
-                <Grid item>
+                <Grid>
                   <Button
                     variant="contained"
                     color="success"
@@ -536,7 +568,7 @@ const EnhancedStockForecasting = () => {
                     Buy 10 Shares
                   </Button>
                 </Grid>
-                <Grid item>
+                <Grid>
                   <Button
                     variant="contained"
                     color="error"
@@ -546,7 +578,7 @@ const EnhancedStockForecasting = () => {
                     Sell 10 Shares
                   </Button>
                 </Grid>
-                <Grid item>
+                <Grid>
                   <Button
                     variant="outlined"
                     onClick={() => generateSignal('simple')}
@@ -555,7 +587,7 @@ const EnhancedStockForecasting = () => {
                     Auto-Trade (Simple Strategy)
                   </Button>
                 </Grid>
-                <Grid item>
+                <Grid>
                   <Button
                     variant="outlined"
                     onClick={() => generateSignal('momentum')}
@@ -570,7 +602,7 @@ const EnhancedStockForecasting = () => {
 
           {/* Current Positions */}
           {portfolioData && portfolioData.positions && portfolioData.positions.length > 0 && (
-            <Grid item xs={12}>
+            <Grid size={{ xs: 12 }}>
               <Paper sx={{ p: 3 }}>
                 <Typography variant="h5" gutterBottom>
                   Current Positions
@@ -617,6 +649,187 @@ const EnhancedStockForecasting = () => {
             </Grid>
           )}
         </Grid>
+      )}
+
+      {/* Tab 3: Adaptive Learning */}
+      {activeTab === 3 && !loading && (
+        <Box>
+          {adaptiveLearningData ? (
+            <Grid container spacing={3}>
+              {/* Model Version Comparison */}
+              <Grid size={{ xs: 12 }}>
+                <Paper sx={{ p: 3 }}>
+                  <Typography variant="h5" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <TrendingUp color="primary" /> Model Performance & Improvements
+                  </Typography>
+                  {adaptiveLearningData.best_models && Object.keys(adaptiveLearningData.best_models).length > 0 ? (
+                    <TableContainer>
+                      <Table>
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Model Type</TableCell>
+                            <TableCell align="right">Current MAE</TableCell>
+                            <TableCell align="right">Initial MAE</TableCell>
+                            <TableCell align="right">Improvement</TableCell>
+                            <TableCell align="right">Total Updates</TableCell>
+                            <TableCell align="right">Last Updated</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {Object.entries(adaptiveLearningData.best_models).map(([modelType, modelData]) => {
+                            const improvement = adaptiveLearningData.improvement_stats?.[modelType];
+                            return (
+                              <TableRow key={modelType}>
+                                <TableCell>
+                                  <Chip label={modelType} color="primary" variant="outlined" />
+                                </TableCell>
+                                <TableCell align="right">
+                                  {modelData?.metrics?.mae?.toFixed(6) || 'N/A'}
+                                </TableCell>
+                                <TableCell align="right">
+                                  {improvement?.initial_mae?.toFixed(6) || 'N/A'}
+                                </TableCell>
+                                <TableCell align="right">
+                                  {improvement?.improvement_percentage !== undefined ? (
+                                    <Chip
+                                      label={`${improvement.improvement_percentage > 0 ? '+' : ''}${improvement.improvement_percentage.toFixed(2)}%`}
+                                      color={improvement.improvement_percentage > 0 ? 'success' : 'error'}
+                                      size="small"
+                                    />
+                                  ) : (
+                                    'N/A'
+                                  )}
+                                </TableCell>
+                                <TableCell align="right">
+                                  {improvement?.total_updates || 1}
+                                </TableCell>
+                                <TableCell align="right">
+                                  {modelData?.timestamp ? new Date(modelData.timestamp).toLocaleDateString() : 'N/A'}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  ) : (
+                    <Alert severity="info" sx={{ mt: 2 }}>
+                      No model versions found. Generate a forecast to create initial models.
+                    </Alert>
+                  )}
+                </Paper>
+              </Grid>
+
+              {/* Ensemble Weights */}
+              {adaptiveLearningData.ensemble_weights && (
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <Paper sx={{ p: 3 }}>
+                    <Typography variant="h6" gutterBottom>
+                      🎯 Adaptive Ensemble Weights
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                      Models are weighted based on recent performance. Better models get higher weight.
+                    </Typography>
+                    <TableContainer>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Model</TableCell>
+                            <TableCell align="right">Weight</TableCell>
+                            <TableCell align="right">Error (MAE)</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {Object.entries(adaptiveLearningData.ensemble_weights.weights || {}).map(([model, weight]) => (
+                            <TableRow key={model}>
+                              <TableCell>{model}</TableCell>
+                              <TableCell align="right">
+                                <Chip label={`${(weight * 100).toFixed(1)}%`} size="small" color="primary" />
+                              </TableCell>
+                              <TableCell align="right">
+                                {adaptiveLearningData.ensemble_weights.errors?.[model]?.toFixed(6) || 'N/A'}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  </Paper>
+                </Grid>
+              )}
+
+              {/* Learning Statistics */}
+              <Grid size={{ xs: 12, md: adaptiveLearningData.ensemble_weights ? 6 : 12 }}>
+                <Paper sx={{ p: 3 }}>
+                  <Typography variant="h6" gutterBottom>
+                    📊 Learning Statistics
+                  </Typography>
+                  <Grid container spacing={2}>
+                    <Grid size={{ xs: 6 }}>
+                      <Card variant="outlined">
+                        <CardContent>
+                          <Typography color="text.secondary" variant="caption">
+                            Total Model Versions
+                          </Typography>
+                          <Typography variant="h5">
+                            {adaptiveLearningData.learning_status?.total_model_versions || 0}
+                          </Typography>
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                    <Grid size={{ xs: 6 }}>
+                      <Card variant="outlined">
+                        <CardContent>
+                          <Typography color="text.secondary" variant="caption">
+                            Average Improvement
+                          </Typography>
+                          <Typography variant="h5" color="success.main">
+                            {adaptiveLearningData.learning_status?.average_improvement?.toFixed(2) || 0}%
+                          </Typography>
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                    <Grid size={{ xs: 6 }}>
+                      <Card variant="outlined">
+                        <CardContent>
+                          <Typography color="text.secondary" variant="caption">
+                            Active Model Types
+                          </Typography>
+                          <Typography variant="h5">
+                            {adaptiveLearningData.learning_status?.active_model_types || 0}
+                          </Typography>
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                    <Grid size={{ xs: 6 }}>
+                      <Card variant="outlined">
+                        <CardContent>
+                          <Typography color="text.secondary" variant="caption">
+                            Last Update
+                          </Typography>
+                          <Typography variant="body2">
+                            {adaptiveLearningData.learning_status?.last_update
+                              ? new Date(adaptiveLearningData.learning_status.last_update).toLocaleString()
+                              : 'N/A'}
+                          </Typography>
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                  </Grid>
+                </Paper>
+              </Grid>
+
+              {/* Adaptive Learning Explainer Component */}
+              <Grid size={{ xs: 12 }}>
+                <AdaptiveLearningExplainer learningData={adaptiveLearningData} />
+              </Grid>
+            </Grid>
+          ) : (
+            <Alert severity="info">
+              Click "Refresh" to view adaptive learning status for {ticker}
+            </Alert>
+          )}
+        </Box>
       )}
     </Container>
   );

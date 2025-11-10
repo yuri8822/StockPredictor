@@ -305,17 +305,46 @@ class AdaptiveLearningManager:
             'rmse': float(np.sqrt(mean_squared_error(actuals, predictions))),
             'mape': float(mean_absolute_percentage_error(actuals, predictions) * 100),
             'train_samples': len(train_data),
-            'val_samples': len(val_data) if val_dataset else 0
+            'val_samples': len(val_data) if val_dataset else 0,
+            'epochs_trained': epochs,
+            'learning_rate': lr,
+            'best_val_loss': float(best_val_loss),
+            'final_train_loss': float(avg_train_loss),
+            'final_val_loss': float(avg_val_loss)
         }
+        
+        # Compare with previous version if available
+        previous_versions = self.version_manager.get_version_history(ticker, model_type)
+        if previous_versions:
+            latest_previous = previous_versions[0]  # Most recent
+            previous_mae = latest_previous['metrics'].get('mae', 0)
+            
+            if previous_mae > 0:
+                improvement = ((previous_mae - metrics['mae']) / previous_mae) * 100
+                metrics['improvement_vs_previous'] = float(improvement)
+                metrics['previous_mae'] = float(previous_mae)
+                metrics['is_improvement'] = improvement > 0
+            else:
+                metrics['improvement_vs_previous'] = None
+                metrics['previous_mae'] = None
+                metrics['is_improvement'] = None
+        else:
+            metrics['improvement_vs_previous'] = None
+            metrics['previous_mae'] = None
+            metrics['is_improvement'] = None
+            metrics['is_first_version'] = True
         
         print(f"[AdaptiveLearning] ✓ Model updated successfully")
         print(f"[AdaptiveLearning]   MAE: {metrics['mae']:.6f}, RMSE: {metrics['rmse']:.6f}, MAPE: {metrics['mape']:.2f}%")
         print(f"[AdaptiveLearning]   Learned from {metrics['train_samples']} actual price points")
+        if metrics.get('improvement_vs_previous') is not None:
+            print(f"[AdaptiveLearning]   Improvement: {metrics['improvement_vs_previous']:.2f}% vs previous version")
         
         # Save updated model version
         version_id = self.version_manager.save_model_version(
             model, ticker, model_type, metrics, config
         )
+        metrics['version_id'] = version_id
         
         return model, metrics
     
